@@ -33,9 +33,11 @@
             position: sticky;
             top: 0;
             z-index: 10;
+            flex-wrap: wrap; /* Чтобы на мобилках переносилось */
+            gap: 16px;
         }
-        .logo { font-size: 1.5rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
-        .search-bar { display: flex; gap: 8px; flex: 1; max-width: 500px; margin: 0 24px; }
+        .logo { font-size: 1.5rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; text-decoration: none; }
+        .search-bar { display: flex; gap: 8px; flex: 1; max-width: 500px; min-width: 250px; }
         .search-bar input {
             flex: 1; padding: 10px 16px; border-radius: 20px; border: 1px solid #333;
             background: var(--bg); color: var(--text); outline: none;
@@ -47,8 +49,32 @@
         }
         .search-bar button:hover { opacity: 0.8; }
 
+        /* Меню навигации */
+        nav {
+            display: flex;
+            gap: 8px;
+            padding: 16px 24px 0;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+            overflow-x: auto; /* Скролл, если не влезает на телефоне */
+            white-space: nowrap;
+        }
+        .nav-btn {
+            background: transparent;
+            border: 1px solid #333;
+            color: var(--text-muted);
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+        }
+        .nav-btn:hover { border-color: var(--primary); color: var(--text); }
+        .nav-btn.active { background: var(--primary); border-color: var(--primary); color: white; font-weight: 600; }
+
         /* Контент */
-        main { flex: 1; padding: 32px 24px; max-width: 1200px; margin: 0 auto; width: 100%; }
+        main { flex: 1; padding: 24px; max-width: 1200px; margin: 0 auto; width: 100%; }
         h2 { margin-bottom: 16px; font-size: 1.5rem; }
         
         .loader { display: none; text-align: center; padding: 40px; color: var(--primary); font-size: 1.2rem; }
@@ -79,23 +105,38 @@
         .player-artist { font-size: 0.875rem; color: var(--text-muted); }
         .player audio { height: 40px; max-width: 300px; }
 
+        /* Отступ снизу, чтобы плеер не перекрывал контент */
+        body.has-player main { padding-bottom: 100px; }
+
         @media (max-width: 600px) {
-            header { flex-direction: column; gap: 16px; padding: 16px; }
-            .search-bar { margin: 0; width: 100%; }
+            header { flex-direction: column; align-items: stretch; padding: 16px; }
+            .search-bar { max-width: 100%; }
+            nav { padding: 16px 16px 0; }
             .player { flex-direction: column; text-align: center; padding: 12px; }
             .player audio { width: 100%; }
+            body.has-player main { padding-bottom: 140px; }
         }
     </style>
 </head>
 <body>
 
     <header>
-        <a href="#" class="logo">🎵 MusicWave</a>
+        <a href="#" class="logo" onclick="loadSection('pop', 'Популярное', this)">🎵 MusicWave</a>
         <form class="search-bar" id="searchForm">
             <input type="text" id="searchInput" placeholder="Поиск музыки (например, Morgenshtern)...">
             <button type="submit">Найти</button>
         </form>
     </header>
+
+    <!-- НОВОЕ МЕНЮ НАВИГАЦИИ -->
+    <nav id="navMenu">
+        <button class="nav-btn active" data-term="pop" data-title="Популярное прямо сейчас">🔥 Популярное</button>
+        <button class="nav-btn" data-term="hits 2024" data-title="Главные хиты">🎧 Хиты</button>
+        <button class="nav-btn" data-term="rock" data-title="Рок-музыка">🎸 Рок</button>
+        <button class="nav-btn" data-term="rap" data-title="Хип-хоп и Рэп">🎤 Рэп</button>
+        <button class="nav-btn" data-term="electronic" data-title="Электронная музыка">🎹 Электроника</button>
+        <button class="nav-btn" data-term="jazz" data-title="Джаз">🎷 Джаз</button>
+    </nav>
 
     <main>
         <h2 id="sectionTitle">Популярное прямо сейчас</h2>
@@ -121,18 +162,18 @@
         const searchForm = document.getElementById('searchForm');
         const searchInput = document.getElementById('searchInput');
         const loader = document.getElementById('loader');
+        const navButtons = document.querySelectorAll('.nav-btn');
 
-        // Базовый URL iTunes Search API
         const API_URL = 'https://itunes.apple.com/search';
 
-        // Функция для получения данных с iTunes
+        // Функция загрузки данных
         async function fetchMusic(term) {
             loader.style.display = 'block';
             trackGrid.innerHTML = '';
             
             try {
-                // Запрос к API (limit=24 трека)
-                const response = await fetch(`${API_URL}?term=${encodeURIComponent(term)}&media=music&limit=24`);
+                // Добавил entity=song, чтобы iTunes искал именно треки, а не альбомы или подкасты
+                const response = await fetch(`${API_URL}?term=${encodeURIComponent(term)}&media=music&entity=song&limit=24`);
                 const data = await response.json();
                 
                 if (data.results.length === 0) {
@@ -152,7 +193,6 @@
         function renderTracks(tracks) {
             trackGrid.innerHTML = '';
             tracks.forEach(track => {
-                // iTunes отдаёт обложку 100x100, меняем на 300x300
                 const artwork = track.artworkUrl100 ? track.artworkUrl100.replace('100x100', '300x300') : 'https://via.placeholder.com/300?text=No+Cover';
                 
                 const card = document.createElement('div');
@@ -175,6 +215,7 @@
                 return;
             }
             player.classList.add('active');
+            document.body.classList.add('has-player');
             playerTitle.textContent = track.trackName;
             playerArtist.textContent = track.artistName;
             
@@ -182,19 +223,38 @@
             audioPlayer.play();
         }
 
+        // Логика переключения разделов
+        function loadSection(term, title, btn) {
+            sectionTitle.textContent = title;
+            fetchMusic(term);
+            
+            // Убираем активный класс со всех кнопок
+            navButtons.forEach(b => b.classList.remove('active'));
+            // Добавляем на нажатую (если передали кнопку)
+            if (btn) btn.classList.add('active');
+        }
+
+        // Обработка кнопок навигации
+        navButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                loadSection(btn.dataset.term, btn.dataset.title, btn);
+            });
+        });
+
         // Обработка поиска
         searchForm.addEventListener('submit', (e) => {
             e.preventDefault();
             const query = searchInput.value.trim();
             if (!query) return;
 
+            // При поиске сбрасываем активную кнопку меню, так как это ручной запрос
+            navButtons.forEach(b => b.classList.remove('active'));
             sectionTitle.textContent = `Результаты поиска: "${query}"`;
             fetchMusic(query);
         });
 
-        // Инициализация при загрузке (показываем популярное)
+        // Инициализация
         document.addEventListener('DOMContentLoaded', () => {
-            // Для демо загружаем треки по запросу "pop"
             fetchMusic('pop');
         });
     </script>
