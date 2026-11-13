@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MusicWave — Портфолио Frontend-разработчика</title>
+    
+    <!-- Supabase SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
     <style>
         :root {
             --bg: #0f0f14;
@@ -155,10 +159,8 @@
         .progress-bar { flex: 1; height: 4px; background: #333; border-radius: 2px; cursor: pointer; position: relative; }
         .progress-fill { height: 100%; background: var(--primary); border-radius: 2px; width: 0%; transition: width 0.1s linear; }
 
-        /* ========== ЭКВАЛАЙЗЕР (ВИЗУАЛИЗАЦИЯ) ========== */
-        .equalizer {
-            display: none; align-items: flex-end; gap: 2px; height: 20px; width: 40px;
-        }
+        /* ========== ЭКВАЛАЙЗЕР ========== */
+        .equalizer { display: none; align-items: flex-end; gap: 2px; height: 20px; width: 40px; }
         .player.playing .equalizer { display: flex; }
         .player.playing .player-cover-wrap { display: none; }
         .eq-bar { width: 4px; background: var(--primary); border-radius: 2px; animation: eqAnim 1s infinite ease-in-out alternate; }
@@ -202,7 +204,7 @@
             .player-info { width: 100%; justify-content: center; }
             .player-progress { width: 100%; display: none; }
             .grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 16px; }
-            .like-btn { opacity: 1; } /* На мобилках лайк виден всегда */
+            .like-btn { opacity: 1; }
         }
     </style>
 </head>
@@ -237,6 +239,7 @@
                 <input type="text" id="searchInput" placeholder="Поиск музыки (например, Morgenshtern)...">
                 <button type="submit">Найти</button>
             </form>
+            <button class="nav-btn" id="authBtn" onclick="handleAuth()" style="padding: 8px 16px; border: 1px solid #333; white-space: nowrap;">Войти</button>
             <button class="nav-btn" onclick="openAbout()" style="padding: 8px 16px; border: 1px solid #333;">ℹ️ О проекте</button>
         </header>
 
@@ -281,8 +284,8 @@
         <div class="modal-content">
             <h2>🎵 MusicWave</h2>
             <p>Этот проект создан как демонстрация навыков Frontend-разработки. Все данные и аудио берутся из официального <code>iTunes Search API</code>, что гарантирует легальность контента.</p>
-            <p><strong>Стек:</strong> Чистый JavaScript (ES6+), HTML5, CSS3 (Grid/Flexbox), Web Audio API (визуализация), LocalStorage (сохранение истории и лайков).</p>
-            <p><strong>Особенности:</strong> Адаптивный дизайн, кастомный плеер, алгоритм «Моя волна», скелетон-загрузка.</p>
+            <p><strong>Стек:</strong> Чистый JavaScript (ES6+), HTML5, CSS3, Web Audio API, LocalStorage, Supabase (Auth + PostgreSQL).</p>
+            <p><strong>Особенности:</strong> Адаптивный дизайн, кастомный плеер, алгоритм «Моя волна», облачное сохранение избранного (после входа).</p>
             <button class="modal-close" onclick="closeAbout()">Понятно</button>
         </div>
     </div>
@@ -290,10 +293,10 @@
     <!-- УВЕДОМЛЕНИЯ -->
     <div class="toast" id="toast">Текст уведомления</div>
 
+    <!-- ОСНОВНОЙ СКРИПТ -->
     <script>
         const API_URL = 'https://itunes.apple.com/search';
         
-        // DOM Элементы
         const trackGrid = document.getElementById('trackGrid');
         const sectionTitle = document.getElementById('sectionTitle');
         const player = document.getElementById('player');
@@ -309,14 +312,15 @@
         const navButtons = document.querySelectorAll('.nav-btn');
         const likeCurrentBtn = document.getElementById('likeCurrentBtn');
 
-        // Состояние
         let playlist = [];
         let currentIndex = -1;
         let isPlaying = false;
         let history = JSON.parse(localStorage.getItem('mw_history')) || [];
         let favorites = JSON.parse(localStorage.getItem('mw_favorites')) || [];
+        
+        // Переменная для хранения текущего пользователя (синхронизируется с Supabase)
+        let currentUser = null;
 
-        // --- УТИЛИТЫ ---
         function showToast(msg) {
             const toast = document.getElementById('toast');
             toast.textContent = msg;
@@ -333,19 +337,20 @@
 
         function toggleSidebar() { sidebar.classList.toggle('open'); }
 
-        // --- МОДАЛЬНОЕ ОКНО ---
         function openAbout() { document.getElementById('aboutModal').classList.add('active'); }
         function closeAbout() { document.getElementById('aboutModal').classList.remove('active'); }
 
-        // --- ИЗБРАННОЕ ---
         function isFavorite(trackId) {
             return favorites.some(f => f.trackId === trackId);
         }
 
-        function toggleFavorite(track, event) {
-            if (event) event.stopPropagation(); // Чтобы не запускался плеер при клике на сердечко
+        // Логика добавления/удаления лайка (с синхронизацией)
+        async function toggleFavorite(track, event) {
+            if (event) event.stopPropagation();
             
-            if (isFavorite(track.trackId)) {
+            const isFav = isFavorite(track.trackId);
+
+            if (isFav) {
                 favorites = favorites.filter(f => f.trackId !== track.trackId);
                 showToast('Удалено из избранного');
             } else {
@@ -353,21 +358,30 @@
                 showToast('Добавлено в избранное ❤️');
             }
             localStorage.setItem('mw_favorites', JSON.stringify(favorites));
-            
-            // Обновляем UI карточки
+
+            // Синхронизация с Supabase
+            if (currentUser && window.supabaseClient) {
+                if (isFav) {
+                    await window.supabaseClient.from('favorites').delete().match({ user_id: currentUser.id, track_id: track.trackId });
+                } else {
+                    await window.supabaseClient.from('favorites').insert({
+                        user_id: currentUser.id,
+                        track_id: track.trackId,
+                        track_data: track
+                    });
+                }
+            }
+
+            // Обновляем UI
             const card = document.getElementById(`card-${track.trackId}`);
             if (card) {
                 const btn = card.querySelector('.like-btn');
                 if (btn) btn.classList.toggle('liked', isFavorite(track.trackId));
             }
-            
-            // Обновляем UI плеера, если этот трек сейчас играет
             if (playlist[currentIndex] && playlist[currentIndex].trackId === track.trackId) {
                 likeCurrentBtn.classList.toggle('liked', isFavorite(track.trackId));
                 likeCurrentBtn.textContent = isFavorite(track.trackId) ? '♥' : '♡';
             }
-            
-            // Если мы на странице избранного и удалили трек — перерисовываем
             if (sectionTitle.textContent.includes('Моя музыка')) {
                 loadFavorites();
             }
@@ -379,7 +393,6 @@
             }
         }
 
-        // --- ЛОГИКА ДАННЫХ ---
         function renderSkeletons() {
             trackGrid.innerHTML = '';
             for (let i = 0; i < 10; i++) {
@@ -429,7 +442,7 @@
             try {
                 const response = await fetch(`${API_URL}?term=${encodeURIComponent(term)}&media=music&entity=song&limit=24`);
                 const data = await response.json();
-                playlist = data.results; // Сохраняем плейлист
+                playlist = data.results;
                 renderTracks(playlist);
             } catch (error) {
                 console.error(error);
@@ -463,55 +476,46 @@
             sectionTitle.textContent = '💛 Моя музыка';
             navButtons.forEach(b => b.classList.remove('active'));
             if (btn) btn.classList.add('active');
-            
-            playlist = favorites; // Устанавливаем плейлист как избранное
+            playlist = favorites;
             renderTracks(favorites);
         }
 
-        // --- ПЛЕЕР ---
         function playTrackFromList(track) {
             if (!track.previewUrl) {
                 showToast("У этого трека нет превью.");
                 return;
             }
 
-            // Находим индекс трека в текущем плейлисте
             currentIndex = playlist.findIndex(t => t.trackId === track.trackId);
             if (currentIndex === -1) {
-                // Если трека нет в плейлисте (например, играем из избранного), добавляем
                 playlist.push(track);
                 currentIndex = playlist.length - 1;
             }
 
-            // Сохраняем в историю для "Моей волны"
             const historyItem = { id: track.trackId, artist: track.artistName };
             history = history.filter(h => h.id !== track.trackId);
             history.push(historyItem);
             if (history.length > 20) history.shift();
             localStorage.setItem('mw_history', JSON.stringify(history));
 
-            // Обновляем UI плеера
             player.classList.add('active');
             playerCover.src = track.artworkUrl100 ? track.artworkUrl100.replace('100x100', '150x150') : 'https://via.placeholder.com/56?text=♪';
             playerTitle.textContent = track.trackName;
             playerArtist.textContent = track.artistName;
             
-            // Обновляем лайк в плеере
             const liked = isFavorite(track.trackId);
             likeCurrentBtn.classList.toggle('liked', liked);
             likeCurrentBtn.textContent = liked ? '♥' : '♡';
 
-            // Подсвечиваем активную карточку
             document.querySelectorAll('.card').forEach(c => c.classList.remove('playing'));
             const activeCard = document.getElementById(`card-${track.trackId}`);
             if (activeCard) activeCard.classList.add('playing');
 
-            // Воспроизведение
             audioPlayer.src = track.previewUrl;
             audioPlayer.play();
             isPlaying = true;
             playBtn.textContent = '⏸';
-            player.classList.add('playing'); // Включаем эквалайзер
+            player.classList.add('playing');
         }
 
         function togglePlay() {
@@ -557,8 +561,6 @@
         });
 
         audioPlayer.addEventListener('ended', playNext);
-        
-        // Управление эквалайзером при паузе
         audioPlayer.addEventListener('play', () => player.classList.add('playing'));
         audioPlayer.addEventListener('pause', () => player.classList.remove('playing'));
 
@@ -571,7 +573,6 @@
             }
         }
 
-        // --- ПОИСК ---
         document.getElementById('searchForm').addEventListener('submit', (e) => {
             e.preventDefault();
             const query = document.getElementById('searchInput').value.trim();
@@ -581,34 +582,82 @@
             fetchMusic(query);
         });
 
-        // Инициализация
         document.addEventListener('DOMContentLoaded', () => {
             fetchMusic('pop');
         });
     </script>
 
-    <!-- FIREBASE -->
+    <!-- СКРИПТ SUPABASE (Авторизация и Синхронизация) -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-app.js";
-        import { getAnalytics } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-analytics.js";
+        // Твои реальные ключи
+        const SUPABASE_URL = 'https://vekwpevygenkhodsridv.supabase.co';
+        const SUPABASE_KEY = 'sb_publishable_D01fzymFN0as7qdKz7Urpg_F_hyo9_B';
+        
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        window.supabaseClient = supabase; // Делаем глобальным для обычного скрипта
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyDSWaq-t5lJVxlh-PtXiRyo6GZOA_uzhg8",
-            authDomain: "photolab-ef572.firebaseapp.com",
-            projectId: "photolab-ef572",
-            storageBucket: "photolab-ef572.firebasestorage.app",
-            messagingSenderId: "168894868190",
-            appId: "1:168894868190:web:62bdfe8b6d42ac5dafb04f",
-            measurementId: "G-N2MVJ6Z3B3"
+        // Слушаем изменения авторизации
+        supabase.auth.onAuthStateChange((event, session) => {
+            if (session) {
+                currentUser = session.user;
+                document.getElementById('authBtn').textContent = 'Выйти';
+                showToast('Вы вошли в аккаунт. Синхронизация...');
+                
+                // Подгружаем лайки из базы
+                syncFavorites();
+            } else {
+                currentUser = null;
+                document.getElementById('authBtn').textContent = 'Войти';
+                // Если вышли, возвращаем локальные лайки
+                favorites = JSON.parse(localStorage.getItem('mw_favorites')) || [];
+                if (sectionTitle.textContent.includes('Моя музыка')) {
+                    renderTracks(favorites);
+                }
+            }
+        });
+
+        // Функция кнопки Войти/Выйти
+        window.handleAuth = async function() {
+            if (currentUser) {
+                await supabase.auth.signOut();
+                showToast('Вы вышли из аккаунта');
+            } else {
+                const email = prompt("Введите ваш Email для входа (мы отправим ссылку):");
+                if (!email) return;
+                
+                const { error } = await supabase.auth.signInWithOtp({ email });
+                if (error) {
+                    alert("Ошибка: " + error.message);
+                } else {
+                    alert("Ссылка для входа отправлена на " + email + "! Проверьте почту (и папку Спам).");
+                }
+            }
         };
 
-        try {
-            const app = initializeApp(firebaseConfig);
-            const analytics = getAnalytics(app);
-            console.log("✅ Firebase подключен успешно.");
-        } catch (e) {
-            console.warn("⚠️ Firebase не запустился.", e);
-        }
+        // Функция загрузки лайков из базы
+        window.syncFavorites = async function() {
+            if (!currentUser) return;
+            const { data, error } = await supabase.from('favorites').select('track_data');
+            if (error) { console.error(error); return; }
+            
+            favorites = data.map(item => item.track_data);
+            localStorage.setItem('mw_favorites', JSON.stringify(favorites));
+            
+            // Обновляем UI
+            if (sectionTitle.textContent.includes('Моя музыка')) {
+                renderTracks(favorites);
+            } else {
+                // Перерисовываем карточки, чтобы сердечки загорелись
+                document.querySelectorAll('.card').forEach(card => {
+                    const trackId = card.id.replace('card-', '');
+                    const btn = card.querySelector('.like-btn');
+                    if (btn && favorites.some(f => String(f.trackId) === trackId)) {
+                        btn.classList.add('liked');
+                        btn.textContent = '♥';
+                    }
+                });
+            }
+        };
     </script>
 
 </body>
